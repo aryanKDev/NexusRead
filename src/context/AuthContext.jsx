@@ -8,6 +8,7 @@ export function AuthProvider({ children }) {
   const [accessToken, setAccessTokenState] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [sessionExpired, setSessionExpired] = useState(false);
   const tokenRef = useRef(null);
 
   const setAccessToken = useCallback((token) => {
@@ -17,9 +18,10 @@ export function AuthProvider({ children }) {
 
   const getAccessToken = useCallback(() => tokenRef.current, []);
 
-  const clearAuth = useCallback(() => {
+  const clearAuth = useCallback((isExpiry = false) => {
     setAccessToken(null);
     setUser(null);
+    if (isExpiry) setSessionExpired(true);
   }, [setAccessToken]);
 
   useEffect(() => {
@@ -128,6 +130,8 @@ export function AuthProvider({ children }) {
     loading,
     error,
     setError,
+    sessionExpired,
+    setSessionExpired,
     login,
     loginWithGoogle,
     register,

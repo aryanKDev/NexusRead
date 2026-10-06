@@ -6,6 +6,9 @@ const cloudinary = require('../../config/cloudinary');
 const UploadedBook = require('../models/UploadedBook');
 const UploadedBookReadingProgress = require('../models/UploadedBookReadingProgress');
 const UploadedBookReadingSession = require('../models/UploadedBookReadingSession');
+const Book = require('../models/Book');
+const ReadingProgress = require('../models/ReadingProgress');
+const ReadingSession = require('../models/ReadingSession');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/AppError');
 const { sendSuccess } = require('../utils/apiResponse');
@@ -47,6 +50,15 @@ const uploadPdf = catchAsync(async (req, res, next) => {
       data: uploadedBook,
       statusCode: 201,
     });
+  }
+
+  if (!cloudinary.isConfigured) {
+    return next(
+      new AppError(
+        'Cloudinary storage is enabled but credentials are not configured.',
+        500
+      )
+    );
   }
 
   const uploadOptions = {
@@ -102,24 +114,56 @@ const uploadPdf = catchAsync(async (req, res, next) => {
   });
 });
 
+/**
+ * Resolves a readable book by ID:
+ * 1. Checks UploadedBook (user-owned PDF) - verifies user authorization
+ * 2. Checks global catalog Book (accessible to all authenticated readers)
+ * Returns { book, type: 'uploaded' | 'catalog' } or { error }
+ */
+async function resolveReadableBook(bookId, userId) {
+  if (!mongoose.Types.ObjectId.isValid(bookId)) {
+    return { error: new AppError('Invalid book ID.', 400) };
+  }
+
+  // 1. Check UploadedBook first
+  const uploaded = await UploadedBook.findById(bookId);
+  if (uploaded) {
+    if (uploaded.user.toString() !== userId.toString()) {
+      return { error: new AppError('You do not have access to this book.', 403) };
+    }
+    return { book: uploaded, type: 'uploaded' };
+  }
+
+  // 2. Check global catalog Book
+  const catalogBook = await Book.findById(bookId);
+  if (catalogBook) {
+    return { book: catalogBook, type: 'catalog' };
+  }
+
+  return { error: new AppError('Book not found.', 404) };
+}
+
 const getBook = catchAsync(async (req, res, next) => {
   const { bookId } = req.params;
+  const resolution = await resolveReadableBook(bookId, req.user._id);
 
-  if (!mongoose.Types.ObjectId.isValid(bookId)) {
-    return next(new AppError('Invalid book ID.', 400));
+  if (resolution.error) {
+    return next(resolution.error);
   }
 
-  const book = await UploadedBook.findById(bookId);
-
-  if (!book) {
-    return next(new AppError('Book not found.', 404));
+  const { book, type } = resolution;
+  if (type === 'uploaded') {
+    return sendSuccess(res, { data: book });
   }
 
-  if (book.user.toString() !== req.user._id.toString()) {
-    return next(new AppError('You do not have access to this book.', 403));
-  }
-
-  return sendSuccess(res, { data: book });
+  // For catalog Book, provide normalized reader metadata
+  const catalogData = {
+    ...book.toObject(),
+    id: book._id,
+    fileUrl: book.pdfUrl || '',
+    totalPages: book.pages || 0,
+  };
+  return sendSuccess(res, { data: catalogData });
 });
 
 const updateProgress = catchAsync(async (req, res, next) => {
@@ -127,10 +171,6 @@ const updateProgress = catchAsync(async (req, res, next) => {
 
   if (!bookId) {
     return next(new AppError('bookId is required.', 400));
-  }
-
-  if (!mongoose.Types.ObjectId.isValid(bookId)) {
-    return next(new AppError('Invalid bookId.', 400));
   }
 
   const page = Number(currentPage);
@@ -148,36 +188,68 @@ const updateProgress = catchAsync(async (req, res, next) => {
     );
   }
 
-  const book = await UploadedBook.findById(bookId);
-
-  if (!book) {
-    return next(new AppError('Book not found.', 404));
+  const resolution = await resolveReadableBook(bookId, req.user._id);
+  if (resolution.error) {
+    return next(resolution.error);
   }
 
-  if (book.user.toString() !== req.user._id.toString()) {
-    return next(new AppError('You do not have access to this book.', 403));
-  }
-
+  const { book, type } = resolution;
   const percentage = Math.round((page / total) * 100);
   const now = new Date();
 
-  const progress = await UploadedBookReadingProgress.findOneAndUpdate(
+  if (type === 'uploaded') {
+    const progress = await UploadedBookReadingProgress.findOneAndUpdate(
+      { user: req.user._id, book: bookId },
+      {
+        currentPage: page,
+        totalPages: total,
+        percentage,
+        lastReadAt: now,
+        updatedAt: now,
+      },
+      {
+        new: true,
+        upsert: true,
+        runValidators: true,
+      }
+    ).populate('book', 'title fileUrl totalPages');
+
+    return sendSuccess(res, { data: progress });
+  }
+
+  // type === 'catalog'
+  const catalogStatus = percentage >= 100 ? 'completed' : (page > 1 ? 'reading' : 'wishlist');
+  const updateFields = {
+    currentPage: page,
+    percentage,
+    lastReadAt: now,
+    status: catalogStatus,
+  };
+  if (Array.isArray(req.body.bookmarks)) {
+    updateFields.bookmarks = req.body.bookmarks;
+  }
+  if (Array.isArray(req.body.userHighlights)) {
+    updateFields.userHighlights = req.body.userHighlights;
+  }
+
+  const progress = await ReadingProgress.findOneAndUpdate(
     { user: req.user._id, book: bookId },
-    {
-      currentPage: page,
-      totalPages: total,
-      percentage,
-      lastReadAt: now,
-      updatedAt: now,
-    },
+    updateFields,
     {
       new: true,
       upsert: true,
       runValidators: true,
     }
-  ).populate('book', 'title fileUrl totalPages');
+  ).populate('book', 'title pages pdfUrl cover');
 
-  return sendSuccess(res, { data: progress });
+  return sendSuccess(res, {
+    data: {
+      ...progress.toObject(),
+      currentPage: progress.currentPage,
+      totalPages: total || book.pages || 1,
+      percentage: progress.percentage,
+    },
+  });
 });
 
 const getProgress = catchAsync(async (req, res, next) => {
@@ -187,36 +259,63 @@ const getProgress = catchAsync(async (req, res, next) => {
     return next(new AppError('bookId is required.', 400));
   }
 
-  if (!mongoose.Types.ObjectId.isValid(bookId)) {
-    return next(new AppError('Invalid bookId.', 400));
+  const resolution = await resolveReadableBook(bookId, req.user._id);
+  if (resolution.error) {
+    return next(resolution.error);
   }
 
-  const book = await UploadedBook.findById(bookId);
+  const { book, type } = resolution;
 
-  if (!book) {
-    return next(new AppError('Book not found.', 404));
+  if (type === 'uploaded') {
+    const progress = await UploadedBookReadingProgress.findOne({
+      user: req.user._id,
+      book: bookId,
+    });
+
+    if (!progress) {
+      return sendSuccess(res, {
+        data: {
+          currentPage: 1,
+          totalPages: 1,
+          percentage: 0,
+        },
+      });
+    }
+
+    return sendSuccess(res, { data: progress });
   }
 
-  if (book.user.toString() !== req.user._id.toString()) {
-    return next(new AppError('You do not have access to this book.', 403));
-  }
-
-  const progress = await UploadedBookReadingProgress.findOne({
+  // type === 'catalog'
+  const progress = await ReadingProgress.findOne({
     user: req.user._id,
     book: bookId,
   });
 
+  const totalPages = book.pages > 0 ? book.pages : 1;
   if (!progress) {
     return sendSuccess(res, {
       data: {
         currentPage: 1,
-        totalPages: 1,
+        totalPages,
         percentage: 0,
+        status: 'reading',
+        bookmarks: [],
+        userHighlights: [],
       },
     });
   }
 
-  return sendSuccess(res, { data: progress });
+  return sendSuccess(res, {
+    data: {
+      ...progress.toObject(),
+      currentPage: progress.currentPage || 1,
+      totalPages: totalPages,
+      percentage: progress.percentage || 0,
+      status: progress.status || 'reading',
+      bookmarks: progress.bookmarks || [],
+      userHighlights: progress.userHighlights || [],
+    },
+  });
 });
 
 const createSession = catchAsync(async (req, res, next) => {
@@ -226,28 +325,31 @@ const createSession = catchAsync(async (req, res, next) => {
     return next(new AppError('bookId is required.', 400));
   }
 
-  if (!mongoose.Types.ObjectId.isValid(bookId)) {
-    return next(new AppError('Invalid bookId.', 400));
-  }
-
   const duration = Number(durationInSeconds);
   if (!Number.isFinite(duration) || duration < 0) {
     return next(new AppError('durationInSeconds must be a non-negative number.', 400));
   }
 
-  const book = await UploadedBook.findById(bookId);
-  if (!book) {
-    return next(new AppError('Book not found.', 404));
-  }
-  if (book.user.toString() !== req.user._id.toString()) {
-    return next(new AppError('You do not have access to this book.', 403));
+  const resolution = await resolveReadableBook(bookId, req.user._id);
+  if (resolution.error) {
+    return next(resolution.error);
   }
 
-  await UploadedBookReadingSession.create({
-    user: req.user._id,
-    book: bookId,
-    durationInSeconds: Math.round(duration),
-  });
+  const { type } = resolution;
+
+  if (type === 'uploaded') {
+    await UploadedBookReadingSession.create({
+      user: req.user._id,
+      book: bookId,
+      durationInSeconds: Math.round(duration),
+    });
+  } else {
+    await ReadingSession.create({
+      user: req.user._id,
+      book: bookId,
+      duration: Math.round(duration),
+    });
+  }
 
   return sendSuccess(res, { data: { ok: true }, statusCode: 201 });
 });

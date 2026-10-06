@@ -77,3 +77,21 @@ exports.smartNotes = catchAsync(async (req, res, next) => {
   if (!result.ok) return next(new AppError(result.error, 503));
   sendSuccess(res, { data: { notes: result.text } });
 });
+
+/**
+ * POST /ai/chapter-summary
+ * Body: { text, chapterTitle?, bookTitle? }
+ */
+exports.chapterSummary = catchAsync(async (req, res, next) => {
+  const { text, chapterTitle, bookTitle } = req.body;
+  if (!text || typeof text !== 'string' || text.trim().length < 50) {
+    return next(new AppError('Please provide chapter text with at least 50 characters.', 400));
+  }
+  const result = await aiService.chapterSummary(
+    text.slice(0, MAX_TEXT),
+    chapterTitle || '',
+    bookTitle || ''
+  );
+  if (!result.ok) return next(new AppError(result.error, 503));
+  sendSuccess(res, { data: { summary: result.text } });
+});

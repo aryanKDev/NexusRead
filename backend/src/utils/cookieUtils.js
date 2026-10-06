@@ -17,7 +17,11 @@ const getCookieOptions = (maxAge = COOKIE_MAX_AGE) => {
   const base = {
     httpOnly: true,
     secure: isProduction,
-    sameSite: 'none',
+    // In production (Vercel ↔ Render, different domains) we need sameSite 'none'
+    // so the cookie is sent on cross-site XHR/fetch. In development, both run on
+    // localhost so 'lax' is correct and avoids browser rejection of 'none' without
+    // 'secure'.
+    sameSite: isProduction ? 'none' : 'lax',
     maxAge,
     path: '/',
   };

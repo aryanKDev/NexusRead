@@ -39,6 +39,7 @@ function BookCard({ book, onAdd, isAdded = false, isAdding = false }) {
   const rating      = book?.averageRating || 0;
 
   const [isOpening, setIsOpening] = useState(false);
+  const [imgFailed, setImgFailed] = useState(false);
 
   const handlePreviewClick = () => {
     if (!previewLink || isOpening) return;
@@ -57,7 +58,7 @@ function BookCard({ book, onAdd, isAdded = false, isAdding = false }) {
     >
       {/* Cover */}
       <div className="relative overflow-hidden flex-shrink-0" style={{ aspectRatio: '2/3' }}>
-        {thumbnail ? (
+        {thumbnail && !imgFailed ? (
           <img
             src={thumbnail}
             alt={title}
@@ -65,6 +66,7 @@ function BookCard({ book, onAdd, isAdded = false, isAdding = false }) {
             loading="lazy"
             decoding="async"
             referrerPolicy="no-referrer"
+            onError={() => setImgFailed(true)}
           />
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-violet-900/40 to-slate-900/80 gap-2">

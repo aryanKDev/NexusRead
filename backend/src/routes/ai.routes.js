@@ -11,5 +11,6 @@ router.post('/explain', ai.explain);
 router.post('/define', ai.define);
 router.post('/ask', ai.ask);
 router.post('/smart-notes', ai.smartNotes);
+router.post('/chapter-summary', ai.chapterSummary);
 
 module.exports = router;

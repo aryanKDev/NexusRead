@@ -8,11 +8,23 @@ const asyncHandler = catchAsync;
 /** Book metadata fields only (for create/update). */
 const BOOK_META_FIELDS = ['title', 'author', 'pages', 'cover', 'genre', 'description'];
 
-/** Normalize body: map legacy field names to current schema. */
+/** Normalize body: map legacy field names to current schema + sanitize. */
 function normalizeBookMeta(body) {
   const meta = pick(body, BOOK_META_FIELDS);
   if (body.coverImage != null && meta.cover === undefined) meta.cover = body.coverImage;
   if (body.categories != null && meta.genre === undefined) meta.genre = body.categories;
+
+  // --- Input sanitization ---
+  if (typeof meta.title === 'string') meta.title = meta.title.trim().slice(0, 500);
+  if (typeof meta.author === 'string') meta.author = meta.author.trim().slice(0, 300);
+  if (typeof meta.description === 'string') meta.description = meta.description.trim().slice(0, 5000);
+  if (typeof meta.cover === 'string') meta.cover = meta.cover.trim().slice(0, 1000);
+  if (meta.pages != null) {
+    meta.pages = Math.max(0, Math.floor(Number(meta.pages) || 0));
+  }
+  if (Array.isArray(meta.genre)) {
+    meta.genre = meta.genre.slice(0, 20).map(g => String(g).trim().slice(0, 100)).filter(Boolean);
+  }
   return meta;
 }
 
@@ -110,6 +122,13 @@ exports.getAllBooks = asyncHandler(async (req, res, next) => {
       .map((a) => (typeof a === 'string' ? a.trim() : ''))
       .filter(Boolean);
 
+    const author =
+      typeof merged.author === 'string' && merged.author.trim()
+        ? merged.author.trim()
+        : authors.length > 0
+        ? authors.join(', ')
+        : 'Unknown Author';
+
     const thumbnail =
       typeof merged.coverImage === 'string' && merged.coverImage.trim().length > 0
         ? merged.coverImage.trim()
@@ -124,11 +143,41 @@ exports.getAllBooks = asyncHandler(async (req, res, next) => {
         ? merged.startDate
         : new Date(id ? String(id).toString().substring(0, 8) : Date.now());
 
+    const pages = Number.isFinite(merged.pages) && merged.pages >= 0 ? merged.pages : 0;
+    const currentPage = Number.isFinite(merged.currentPage) && merged.currentPage >= 0 ? merged.currentPage : 0;
+    const percentage = Number.isFinite(merged.percentage) && merged.percentage >= 0
+      ? merged.percentage
+      : (pages > 0 && currentPage > 0 ? Math.round((currentPage / pages) * 100) : 0);
+
+    const status = merged.status || (percentage >= 100 ? 'completed' : (currentPage > 0 ? 'reading' : 'wishlist'));
+    const rating = Number.isFinite(merged.rating) && merged.rating >= 0
+      ? merged.rating
+      : (Number.isFinite(merged.averageRating) && merged.averageRating >= 0 ? merged.averageRating : 0);
+
+    const genres = Array.isArray(merged.genre)
+      ? merged.genre
+      : (Array.isArray(merged.categories) ? merged.categories : []);
+
     return {
       id,
       title,
-      authors,
+      author,
+      authors: authors.length > 0 ? authors : (author !== 'Unknown Author' ? [author] : []),
       thumbnail,
+      cover: thumbnail,
+      coverImage: thumbnail,
+      pages,
+      currentPage,
+      percentage,
+      status,
+      rating,
+      genre: genres,
+      categories: genres,
+      description: merged.description || '',
+      pdfUrl: merged.pdfUrl || '',
+      startDate: merged.startDate ?? null,
+      endDate: merged.endDate ?? null,
+      lastReadAt: merged.lastReadAt ?? null,
       createdAt,
       type: 'external',
     };
@@ -145,25 +194,35 @@ exports.getAllBooks = asyncHandler(async (req, res, next) => {
     const createdAt =
       doc.createdAt instanceof Date ? doc.createdAt : new Date(Date.now());
 
+    const currentPage =
+      progressDoc && Number.isFinite(progressDoc.currentPage)
+        ? progressDoc.currentPage
+        : 1;
+    const totalPages =
+      progressDoc && Number.isFinite(progressDoc.totalPages)
+        ? progressDoc.totalPages
+        : (Number.isFinite(doc.totalPages) && doc.totalPages > 0 ? doc.totalPages : 1);
+    const percentage =
+      progressDoc && Number.isFinite(progressDoc.percentage)
+        ? progressDoc.percentage
+        : Math.round((currentPage / totalPages) * 100);
+
     return {
       id,
       title,
-      authors: [],
+      author: 'Uploaded Document',
+      authors: ['Uploaded Document'],
       thumbnail: null,
+      cover: null,
+      coverImage: null,
       createdAt,
       type: 'uploaded',
-      currentPage:
-        progressDoc && Number.isFinite(progressDoc.currentPage)
-          ? progressDoc.currentPage
-          : undefined,
-      totalPages:
-        progressDoc && Number.isFinite(progressDoc.totalPages)
-          ? progressDoc.totalPages
-          : undefined,
-      percentage:
-        progressDoc && Number.isFinite(progressDoc.percentage)
-          ? progressDoc.percentage
-          : undefined,
+      pages: totalPages,
+      totalPages,
+      currentPage,
+      percentage,
+      status: percentage >= 100 ? 'completed' : 'reading',
+      fileUrl: doc.fileUrl,
       lastReadAt: progressDoc?.lastReadAt ?? undefined,
     };
   };

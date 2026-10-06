@@ -8,7 +8,7 @@ import {
   Play, Pause, Eye, EyeOff, FileText
 } from 'lucide-react';
 import api from '../api/axios';
-import AIAssistant from '../components/AIAssistant';
+const AIAssistant = React.lazy(() => import('../components/AIAssistant'));
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -43,6 +43,21 @@ const HIGHLIGHT_COLORS = [
   { id: 'green',  label: 'Green',  bg: 'rgba(16,185,129,0.25)', border: 'rgba(16,185,129,0.7)' },
   { id: 'pink',   label: 'Pink',   bg: 'rgba(236,72,153,0.25)', border: 'rgba(236,72,153,0.7)' },
 ];
+
+// Fallback handler for external images that fail to load (ERR_CONNECTION_RESET etc.)
+const FALLBACK_IMG_SRC = 'data:image/svg+xml,' + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="160" fill="none">' +
+  '<rect width="120" height="160" rx="8" fill="#1e1b4b"/>' +
+  '<text x="60" y="85" text-anchor="middle" fill="#7c3aed" font-size="14" font-family="sans-serif">No Cover</text>' +
+  '</svg>'
+);
+
+/** Attach to any <img> `onError` to swap in a placeholder */
+const handleImgError = (e) => {
+  if (e.target.src !== FALLBACK_IMG_SRC) {
+    e.target.src = FALLBACK_IMG_SRC;
+  }
+};
 
 // Inline toolbar shown on text selection
 function SelectionToolbar({ pos, onHighlight, onAskAI, onClose }) {
@@ -131,21 +146,12 @@ export default function Reader() {
   const hasExplicitPageInUrl = urlPageParam != null && String(urlPageParam).trim() !== '';
 
   // ---------------------------------------------------------------------------
-  // Memoized file prop for <Document>.
-  // • Re-computed only when pdfUrl changes, so react-pdf never sees a new
-  //   object reference during unrelated renders → prevents "Worker was
-  //   terminated" and the "File prop changed but equal" warning.
-  // • External (Cloudinary) URLs are passed as a plain string without
-  //   credentials to satisfy Cloudinary's open CORS policy (`ACAO: *`).
-  // • Internal backend URLs (starting with /api) keep withCredentials so
-  //   session cookies / JWT cookies are sent along.
+  // State
   // ---------------------------------------------------------------------------
 
   // Book & PDF state
   const [book, setBook] = useState(null);
   const [pdfUrl, setPdfUrl] = useState('');
-  // Retry counter — incrementing this forces useMemo to re-derive pdfFile
-  // so the user can retry a failed load without changing the URL.
   const [retryCount, setRetryCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(parseInt(urlPageParam || '1'));
   const [totalPages, setTotalPages] = useState(0);
@@ -184,26 +190,77 @@ export default function Reader() {
   const [pageInput, setPageInput] = useState('');
   const [editingPage, setEditingPage] = useState(false);
 
-  // Memoized file object passed to <Document>.
-  // Depends on pdfUrl AND retryCount so clicking "Retry" forces a fresh load.
+  // ---------------------------------------------------------------------------
+  // Memoized file prop for <Document>.
+  // • Re-computed only when pdfUrl / retryCount changes.
+  // • External URLs are plain strings (no credentials).
+  // • Internal URLs keep withCredentials for session cookies.
+  // ---------------------------------------------------------------------------
   const pdfFile = useMemo(() => {
     if (!pdfUrl) return null;
-    // External CDN (Cloudinary, S3, etc.) — no credentials.
     if (isExternalUrl(pdfUrl)) return pdfUrl;
-    // Internal backend API — include credentials (session/JWT cookie).
     return { url: pdfUrl, withCredentials: true };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdfUrl, retryCount]);
 
+  // ---------------------------------------------------------------------------
   // Refs
+  // ---------------------------------------------------------------------------
   const iframeRef = useRef(null);
   const containerRef = useRef(null);
   const autoScrollRef = useRef(null);
   const toolbarHideTimer = useRef(null);
   const sessionStart = useRef(Date.now());
   const lastSavedPage = useRef(currentPage);
+  const selectionTimerRef = useRef(null);
+  const pageObserverRefs = useRef({});
 
-  // Load book
+  // ---------------------------------------------------------------------------
+  // Callbacks — declared BEFORE any useEffect that references them.
+  // This eliminates the Temporal Dead Zone (TDZ) crashes.
+  // ---------------------------------------------------------------------------
+
+  /** Persist reading progress + annotations to backend */
+  const saveProgress = useCallback(() => {
+    if (!bookId || !currentPage) return;
+    const sessionDuration = Math.round((Date.now() - sessionStart.current) / 1000);
+    const knownTotal = Number(totalPages || book?.pages || book?.totalPages || 0);
+    const safeTotal = Number.isInteger(knownTotal) && knownTotal > 0
+      ? knownTotal
+      : Math.max(1, Number(currentPage) || 1);
+    api.post(`/reader/progress/${bookId}`, {
+      currentPage,
+      totalPages: safeTotal,
+      sessionDuration,
+      bookmarks,
+      userHighlights: highlights,
+    }).catch(() => {});
+  }, [bookId, currentPage, totalPages, book, bookmarks, highlights]);
+
+  /** Navigate by delta pages */
+  const handlePageChange = useCallback((delta) => {
+    setCurrentPage(p => Math.max(1, Math.min(totalPages || p, p + delta)));
+  }, [totalPages]);
+
+  /** Toggle bookmark on current page */
+  const addBookmark = useCallback(() => {
+    setBookmarks(bs => {
+      const existing = bs.find(b => b.page === currentPage);
+      if (existing) return bs.filter(b => b.page !== currentPage);
+      return [...bs, { page: currentPage, label: `Page ${currentPage}`, createdAt: new Date().toISOString() }];
+    });
+  }, [currentPage]);
+
+  // Keep a ref to the latest saveProgress so interval/unmount callbacks
+  // never go stale.
+  const saveProgressRef = useRef(null);
+  useEffect(() => { saveProgressRef.current = saveProgress; }, [saveProgress]);
+
+  // ---------------------------------------------------------------------------
+  // Effects
+  // ---------------------------------------------------------------------------
+
+  // Load book metadata
   useEffect(() => {
     if (!bookId) return;
     api.get(`/books/${bookId}`)
@@ -221,7 +278,7 @@ export default function Reader() {
       .finally(() => setLoading(false));
   }, [bookId]);
 
-  // Load saved annotations
+  // Load saved annotations & resume page
   useEffect(() => {
     if (!bookId) return;
     api.get(`/reader/progress/${bookId}`)
@@ -229,7 +286,6 @@ export default function Reader() {
         const d = data?.data;
         if (d?.bookmarks) setBookmarks(d.bookmarks);
         if (d?.userHighlights) setHighlights(d.userHighlights);
-        // Respect explicit URL ?page= when present (deep-linking).
         if (!hasExplicitPageInUrl && d?.currentPage && d.currentPage > 1) {
           setCurrentPage(d.currentPage);
         }
@@ -248,16 +304,16 @@ export default function Reader() {
   useEffect(() => {
     const interval = setInterval(() => {
       if (currentPage !== lastSavedPage.current) {
-        saveProgress();
+        saveProgressRef.current?.();
         lastSavedPage.current = currentPage;
       }
     }, 30000);
     return () => clearInterval(interval);
   }, [currentPage, bookId]);
 
-  // Save on unmount
+  // Save on unmount — uses ref so it always calls the latest version
   useEffect(() => {
-    return () => { saveProgress(); };
+    return () => { saveProgressRef.current?.(); };
   }, []);
 
   // Auto-scroll
@@ -270,7 +326,7 @@ export default function Reader() {
     return () => clearInterval(autoScrollRef.current);
   }, [autoScroll, autoScrollSpeed]);
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts — depends on stable useCallback references
   useEffect(() => {
     const handler = (e) => {
       if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return;
@@ -283,27 +339,11 @@ export default function Reader() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [currentPage, totalPages, bookmarks]);
+  }, [handlePageChange, addBookmark]);
 
-  const saveProgress = useCallback(() => {
-    if (!bookId || !currentPage) return;
-    const sessionDuration = Math.round((Date.now() - sessionStart.current) / 1000);
-    const knownTotal = Number(totalPages || book?.pages || book?.totalPages || 0);
-    const safeTotal = Number.isInteger(knownTotal) && knownTotal > 0
-      ? knownTotal
-      : Math.max(1, Number(currentPage) || 1);
-    api.post(`/reader/progress/${bookId}`, {
-      currentPage,
-      totalPages: safeTotal,
-      sessionDuration,
-      bookmarks,
-      userHighlights: highlights,
-    }).catch(() => {});
-  }, [bookId, currentPage, totalPages, book, bookmarks, highlights]);
-
-  const handlePageChange = (delta) => {
-    setCurrentPage(p => Math.max(1, Math.min(totalPages || p, p + delta)));
-  };
+  // ---------------------------------------------------------------------------
+  // Event handlers (non-hook)
+  // ---------------------------------------------------------------------------
 
   const handlePageJump = () => {
     const n = parseInt(pageInput);
@@ -312,30 +352,24 @@ export default function Reader() {
     setPageInput('');
   };
 
-  const addBookmark = () => {
-    const existing = bookmarks.find(b => b.page === currentPage);
-    if (existing) {
-      setBookmarks(bs => bs.filter(b => b.page !== currentPage));
-    } else {
-      setBookmarks(bs => [...bs, { page: currentPage, label: `Page ${currentPage}`, createdAt: new Date().toISOString() }]);
-    }
-  };
-
   const isBookmarked = bookmarks.some(b => b.page === currentPage);
 
-  // Text selection handler
+  // Text selection handler — debounced to avoid rapid state updates on drag-select
   const handleTextSelection = () => {
-    const sel = window.getSelection();
-    const text = sel?.toString()?.trim();
-    if (!text || text.length < 3) {
-      setSelectionPos(null);
-      setSelectedText('');
-      return;
-    }
-    const range = sel.getRangeAt(0);
-    const rect = range.getBoundingClientRect();
-    setSelectedText(text);
-    setSelectionPos({ x: rect.left + rect.width / 2, y: rect.top });
+    clearTimeout(selectionTimerRef.current);
+    selectionTimerRef.current = setTimeout(() => {
+      const sel = window.getSelection();
+      const text = sel?.toString()?.trim();
+      if (!text || text.length < 3) {
+        setSelectionPos(null);
+        setSelectedText('');
+        return;
+      }
+      const range = sel.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
+      setSelectedText(text);
+      setSelectionPos({ x: rect.left + rect.width / 2, y: rect.top });
+    }, 150);
   };
 
   const handleHighlight = (colorId) => {
@@ -352,6 +386,10 @@ export default function Reader() {
   };
 
   const estimatedSpeed = sessionTime > 60 ? Math.round(((currentPage - 1) / (sessionTime / 3600)) || 0) : null;
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
 
   if (loading) return (
     <div className="min-h-screen bg-nx-gradient flex items-center justify-center">
@@ -618,7 +656,7 @@ export default function Reader() {
           style={{ background: currentTheme.bg }}
         >
           <div
-            className="flex flex-col items-center py-8 px-4 min-h-full transition-all duration-300"
+            className="flex flex-col items-center py-8 px-4 pb-24 min-h-full transition-all duration-300"
             style={{
               filter: focusMode ? 'contrast(1.05)' : 'none',
             }}
@@ -627,72 +665,108 @@ export default function Reader() {
               <div
                 className="w-full max-w-4xl shadow-2xl rounded-2xl overflow-hidden bg-white/5"
                 style={{
-                  height: '85vh',
+                  minHeight: '85vh',
                   boxShadow: `0 20px 60px rgba(0,0,0,0.8)`,
                 }}
               >
-                <div className="w-full h-full overflow-auto flex items-start justify-center p-6">
-                  <div className="rounded-xl overflow-hidden bg-white">
-                    <Document
-                      file={pdfFile}
-                      onLoadSuccess={({ numPages }) => {
-                        setTotalPages(numPages);
-                        setPdfError('');
-                        setCurrentPage((p) => Math.min(Math.max(1, p), numPages));
-                      }}
-                      onLoadError={(err) => {
-                        const msg = err?.message || '';
-                        if (msg.includes('Worker')) {
-                          setPdfError('PDF worker failed to start. Please retry.');
-                        } else if (msg.includes('fetch') || msg.includes('network')) {
-                          setPdfError('Network error — could not fetch the PDF. Check your connection.');
-                        } else {
-                          setPdfError(msg || 'Failed to load the PDF file.');
-                        }
-                      }}
-                      loading={
-                        <div className="p-10 text-center text-slate-500">
-                          Loading PDF…
-                        </div>
+                <div className="w-full h-full overflow-auto flex flex-col items-center p-6 gap-6">
+                  <Document
+                    file={pdfFile}
+                    onLoadSuccess={({ numPages }) => {
+                      setTotalPages(numPages);
+                      setPdfError('');
+                      setCurrentPage((p) => Math.min(Math.max(1, p), numPages));
+                    }}
+                    onLoadError={(err) => {
+                      const msg = err?.message || '';
+                      if (msg.includes('Worker')) {
+                        setPdfError('PDF worker failed to start. Please retry.');
+                      } else if (msg.includes('fetch') || msg.includes('network')) {
+                        setPdfError('Network error — could not fetch the PDF. Check your connection.');
+                      } else {
+                        setPdfError(msg || 'Failed to load the PDF file.');
                       }
-                      error={
-                        <div className="p-10 flex flex-col items-center gap-3 text-center">
-                          <FileText className="w-10 h-10 text-red-400 opacity-60" />
-                          <p className="text-red-400 font-semibold text-sm">PDF failed to load</p>
-                          <p className="text-slate-500 text-xs max-w-xs">
-                            {pdfError || 'The file could not be fetched. Check your connection or try again.'}
-                          </p>
-                          <button
-                            onClick={() => { setPdfError(''); setRetryCount(c => c + 1); }}
-                            className="mt-2 px-4 py-1.5 rounded-lg bg-violet-600/20 text-violet-300 text-xs hover:bg-violet-600/30 transition-colors border border-violet-500/30"
-                          >
-                            Retry
-                          </button>
-                        </div>
-                      }
-                      renderMode="canvas"
-                    >
-                      <Page
-                        pageNumber={currentPage}
-                        scale={scale}
-                        renderTextLayer={false}
-                        renderAnnotationLayer={false}
-                        loading={<div className="p-10 text-center text-slate-500">Rendering page…</div>}
-                      />
-                    </Document>
-
-                    {pdfError && (
-                      <div className="p-4 bg-red-950/20 border-t border-red-800/30 flex items-center justify-between gap-4">
-                        <p className="text-red-300 text-sm flex-1">{pdfError}</p>
+                    }}
+                    loading={
+                      <div className="p-10 text-center text-slate-500">
+                        Loading PDF…
+                      </div>
+                    }
+                    error={
+                      <div className="p-10 flex flex-col items-center gap-3 text-center">
+                        <FileText className="w-10 h-10 text-red-400 opacity-60" />
+                        <p className="text-red-400 font-semibold text-sm">PDF failed to load</p>
+                        <p className="text-slate-500 text-xs max-w-xs">
+                          {pdfError || 'The file could not be fetched. Check your connection or try again.'}
+                        </p>
                         <button
                           onClick={() => { setPdfError(''); setRetryCount(c => c + 1); }}
-                          className="px-3 py-1 rounded-lg bg-violet-600/20 text-violet-300 text-xs hover:bg-violet-600/30 transition-colors border border-violet-500/30 flex-shrink-0"
+                          className="mt-2 px-4 py-1.5 rounded-lg bg-violet-600/20 text-violet-300 text-xs hover:bg-violet-600/30 transition-colors border border-violet-500/30"
                         >
                           Retry
                         </button>
                       </div>
-                    )}
-                  </div>
+                    }
+                    renderMode="canvas"
+                  >
+                    {/* Virtualized page window — renders currentPage ± 1 */}
+                    {(() => {
+                      const windowSize = 1; // pages before/after current
+                      const startPage = Math.max(1, currentPage - windowSize);
+                      const endPage = totalPages > 0 ? Math.min(totalPages, currentPage + windowSize) : currentPage + windowSize;
+                      const pages = [];
+                      for (let p = startPage; p <= endPage; p++) {
+                        pages.push(
+                          <div
+                            key={p}
+                            data-page-number={p}
+                            className="rounded-xl overflow-hidden bg-white mb-4 last:mb-0"
+                            ref={(el) => {
+                              if (!el) { delete pageObserverRefs.current[p]; return; }
+                              pageObserverRefs.current[p] = el;
+                              // Use IntersectionObserver to update currentPage on scroll
+                              const observer = new IntersectionObserver(
+                                ([entry]) => {
+                                  if (entry.isIntersecting && entry.intersectionRatio > 0.5) {
+                                    setCurrentPage(prev => {
+                                      const pageNum = Number(entry.target.dataset.pageNumber);
+                                      return pageNum !== prev ? pageNum : prev;
+                                    });
+                                  }
+                                },
+                                { threshold: 0.5 }
+                              );
+                              observer.observe(el);
+                              // Cleanup on unmount
+                              el._observer = observer;
+                              return () => observer.disconnect();
+                            }}
+                          >
+                            <Page
+                              pageNumber={p}
+                              scale={scale}
+                              renderTextLayer={false}
+                              renderAnnotationLayer={false}
+                              loading={<div className="p-10 text-center text-slate-500">Rendering page {p}…</div>}
+                            />
+                          </div>
+                        );
+                      }
+                      return pages;
+                    })()}
+                  </Document>
+
+                  {pdfError && (
+                    <div className="p-4 bg-red-950/20 border-t border-red-800/30 flex items-center justify-between gap-4 w-full rounded-xl">
+                      <p className="text-red-300 text-sm flex-1">{pdfError}</p>
+                      <button
+                        onClick={() => { setPdfError(''); setRetryCount(c => c + 1); }}
+                        className="px-3 py-1 rounded-lg bg-violet-600/20 text-violet-300 text-xs hover:bg-violet-600/30 transition-colors border border-violet-500/30 flex-shrink-0"
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             ) : (
@@ -718,12 +792,23 @@ export default function Reader() {
 
         {showAI && (
           <div className="w-96 h-full overflow-hidden animate-slide-in-right">
-            <AIAssistant
-              book={book}
-              currentPage={currentPage}
-              selectedText={selectedText}
-              onClose={() => setShowAI(false)}
-            />
+            <React.Suspense fallback={
+              <div className="flex items-center justify-center h-full">
+                <div className="text-center">
+                  <div className="w-10 h-10 rounded-xl bg-violet-600/20 border border-violet-500/30 flex items-center justify-center mx-auto mb-3 animate-pulse">
+                    <Zap className="w-5 h-5 text-violet-400" />
+                  </div>
+                  <p className="text-slate-500 text-sm">Loading AI Assistant…</p>
+                </div>
+              </div>
+            }>
+              <AIAssistant
+                book={book}
+                currentPage={currentPage}
+                selectedText={selectedText}
+                onClose={() => setShowAI(false)}
+              />
+            </React.Suspense>
           </div>
         )}
       </div>

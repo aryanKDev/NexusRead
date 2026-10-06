@@ -1,11 +1,12 @@
 import React, { useState, useRef, useCallback, useContext } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Sparkles, X, Send, BookOpen, Type, HelpCircle, FileText, Lightbulb, Loader2 } from 'lucide-react';
+import { Sparkles, X, Send, BookOpen, Type, HelpCircle, FileText, Lightbulb, Loader2, BookText } from 'lucide-react';
 import api from '../api/axios';
 
 const TABS = [
   { id: 'ask', label: 'Ask', icon: HelpCircle, placeholder: 'Ask a question about the book…', endpoint: '/ai/ask', field: 'answer', bodyKey: 'question' },
   { id: 'summarize', label: 'Summarize', icon: FileText, placeholder: 'Paste a passage to summarize…', endpoint: '/ai/summarize', field: 'summary', bodyKey: 'text' },
+  { id: 'chapter-summary', label: 'Chapter', icon: BookText, placeholder: 'Paste chapter text for a structured summary…', endpoint: '/ai/chapter-summary', field: 'summary', bodyKey: 'text' },
   { id: 'explain', label: 'Explain', icon: Type, placeholder: 'Paste a paragraph to explain…', endpoint: '/ai/explain', field: 'explanation', bodyKey: 'text' },
   { id: 'define', label: 'Define', icon: BookOpen, placeholder: 'Enter a word to define…', endpoint: '/ai/define', field: 'definition', bodyKey: 'word' },
   { id: 'smart-notes', label: 'Notes', icon: Lightbulb, placeholder: 'Paste your highlights (one per line)…', endpoint: '/ai/smart-notes', field: 'notes', bodyKey: null },
@@ -36,7 +37,20 @@ function Message({ role, content }) {
   );
 }
 
-export default function AIAssistant({ open, onClose, bookTitle = '', context = '' }) {
+export default function AIAssistant({
+  open = true,
+  onClose,
+  bookTitle: bookTitleProp = '',
+  context: contextProp = '',
+  // New props from Reader.jsx
+  book,
+  selectedText = '',
+  currentPage,
+}) {
+  // Derive bookTitle and context from whichever props are available
+  const bookTitle = bookTitleProp || book?.title || '';
+  const context = contextProp || (book ? `Book: "${book.title}" by ${book.author || 'Unknown'}${currentPage ? `, currently on page ${currentPage}` : ''}` : '');
+
   const [activeTab, setActiveTab] = useState('ask');
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([
@@ -44,6 +58,15 @@ export default function AIAssistant({ open, onClose, bookTitle = '', context = '
   ]);
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef(null);
+
+  // Auto-populate input when text is selected in the Reader
+  const prevSelectedText = useRef('');
+  React.useEffect(() => {
+    if (selectedText && selectedText !== prevSelectedText.current && open) {
+      setInput(selectedText);
+      prevSelectedText.current = selectedText;
+    }
+  }, [selectedText, open]);
 
   const currentTab = TABS.find((t) => t.id === activeTab) || TABS[0];
 
@@ -65,6 +88,8 @@ export default function AIAssistant({ open, onClose, bookTitle = '', context = '
         body = { question: text, context: context || bookTitle };
       } else if (activeTab === 'define') {
         body = { word: text, context };
+      } else if (activeTab === 'chapter-summary') {
+        body = { text, bookTitle };
       } else {
         body = { text, bookTitle };
       }
@@ -133,9 +158,20 @@ export default function AIAssistant({ open, onClose, bookTitle = '', context = '
               <Message key={i} role={msg.role} content={msg.content} />
             ))}
             {loading && (
-              <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
-                <Loader2 className="w-4 h-4 animate-spin text-violet-500" />
-                <span>Thinking…</span>
+              <div className="flex items-start gap-3">
+                <div className="w-7 h-7 rounded-full bg-gradient-to-br from-violet-600 to-indigo-600 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <Sparkles className="w-3.5 h-3.5 text-white" />
+                </div>
+                <div className="flex items-center gap-1.5 py-2.5 px-3 rounded-xl bg-white/[0.03] border border-white/[0.06]">
+                  {[0, 1, 2].map((i) => (
+                    <motion.div
+                      key={i}
+                      className="w-2 h-2 rounded-full bg-violet-400"
+                      animate={{ opacity: [0.3, 1, 0.3], scale: [0.8, 1, 0.8] }}
+                      transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.2 }}
+                    />
+                  ))}
+                </div>
               </div>
             )}
             <div ref={messagesEndRef} />

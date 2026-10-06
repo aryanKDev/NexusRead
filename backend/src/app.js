@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const cookieParser = require('cookie-parser');
+const rateLimit = require('express-rate-limit');
 const path = require('path');
 const routes = require('./routes');
 const errorHandler = require('./middleware/errorHandler');
@@ -81,6 +82,35 @@ app.use(
     },
   })
 );
+
+// ── Global rate limiter ─────────────────────────────────────────────
+const isProduction = process.env.NODE_ENV === 'production';
+
+const globalLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: isProduction ? 200 : 2000,
+  message: {
+    status: 'error',
+    message: 'Too many requests. Please slow down.',
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Strict rate limiter for AI endpoints (expensive Gemini API calls)
+const aiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: isProduction ? 15 : 200,
+  message: {
+    status: 'error',
+    message: 'Too many AI requests. Please wait a moment.',
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use('/api/v1', globalLimiter);
+app.use('/api/v1/ai', aiLimiter);
 
 app.use('/api/v1', routes);
 

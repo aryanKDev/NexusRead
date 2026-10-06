@@ -44,17 +44,19 @@ api.interceptors.response.use(
       original._retry = true;
       try {
         if (!refreshPromise) {
-          refreshPromise = api.post('/auth/refresh');
+          refreshPromise = api.post('/auth/refresh').finally(() => {
+            refreshPromise = null;
+          });
         }
         const { data } = await refreshPromise;
-        refreshPromise = null;
         const token = data.data?.accessToken || data.accessToken;
         if (token && setAccessToken) setAccessToken(token);
         original.headers.Authorization = `Bearer ${token}`;
         return api(original);
-      } catch {
+      } catch (refreshErr) {
         refreshPromise = null;
-        if (onUnauthorized) onUnauthorized();
+        if (onUnauthorized) onUnauthorized(true);
+        return Promise.reject(refreshErr || error);
       }
     }
     return Promise.reject(error);

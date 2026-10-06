@@ -31,10 +31,16 @@ export default function Login() {
   const [email, setEmail]       = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const { login, loginWithGoogle, error, setError } = useContext(AuthContext);
+  const { login, loginWithGoogle, error, setError, sessionExpired, setSessionExpired } = useContext(AuthContext);
   const navigate  = useNavigate();
   const location  = useLocation();
   const from = location.state?.from?.pathname || '/dashboard';
+
+  // Clear session expired message once user starts typing
+  const handleInputChange = (setter) => (e) => {
+    setter(e.target.value);
+    if (sessionExpired) setSessionExpired(false);
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -100,6 +106,17 @@ export default function Login() {
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
+            {/* Session expired banner */}
+            {sessionExpired && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.96 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-300 text-sm"
+              >
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                Your session has expired. Please sign in again.
+              </motion.div>
+            )}
             {/* Email */}
             <div>
               <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Email</label>
@@ -107,7 +124,7 @@ export default function Login() {
                 <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600" />
                 <input
                   id="email" type="email" value={email}
-                  onChange={e => setEmail(e.target.value)}
+                  onChange={handleInputChange(setEmail)}
                   required autoComplete="email"
                   placeholder="you@example.com "
                   className="nx-input pl-10 "
@@ -122,7 +139,7 @@ export default function Login() {
                 <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600" />
                 <input
                   id="password" type="password" value={password}
-                  onChange={e => setPassword(e.target.value)}
+                  onChange={handleInputChange(setPassword)}
                   required autoComplete="current-password"
                   placeholder="••••••••"
                   className="nx-input pl-10"

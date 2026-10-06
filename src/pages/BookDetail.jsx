@@ -65,6 +65,7 @@ export default function BookDetail() {
   const [myBody, setMyBody] = useState('');
   const [submittingReview, setSubmittingReview] = useState(false);
   const [reviewMsg, setReviewMsg] = useState('');
+  const [imgFailed, setImgFailed] = useState(false);
 
   const isInCart = items.some((i) => String(i._id) === String(bookId));
 
@@ -144,8 +145,8 @@ export default function BookDetail() {
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
               className="sticky top-24 space-y-4">
               <div className="aspect-[2/3] rounded-2xl overflow-hidden bg-gradient-to-br from-violet-100 to-indigo-100 dark:from-violet-950 dark:to-indigo-950 shadow-2xl">
-                {cover ? (
-                  <img src={cover} alt={book.title} className="w-full h-full object-cover" />
+                {cover && !imgFailed ? (
+                  <img src={cover} alt={book.title} className="w-full h-full object-cover" onError={() => setImgFailed(true)} />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center">
                     <BookOpen className="w-16 h-16 text-violet-300 dark:text-violet-700" />

@@ -1,4 +1,4 @@
-import React, { memo } from 'react';
+import React, { memo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Star, ShoppingCart, BookOpen, Crown, TrendingUp } from 'lucide-react';
 import { useCart } from '../context/CartContext';
@@ -23,6 +23,7 @@ function MarketplaceBookCard({ book }) {
   const isFree = !book.price || book.price === 0;
   const cover = book.cover || book.coverImage;
   const genres = Array.isArray(book.genre) ? book.genre : [];
+  const [imgFailed, setImgFailed] = useState(false);
 
   const handleAddToCart = (e) => {
     e.preventDefault();
@@ -34,8 +35,8 @@ function MarketplaceBookCard({ book }) {
       <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700 overflow-hidden transition-all duration-300 hover:shadow-xl hover:-translate-y-1 h-full flex flex-col">
         {/* Cover */}
         <div className="relative h-52 bg-gradient-to-br from-violet-100 to-indigo-100 dark:from-violet-950 dark:to-indigo-950 flex-shrink-0 overflow-hidden">
-          {cover ? (
-            <img src={cover} alt={book.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" loading="lazy" />
+          {cover && !imgFailed ? (
+            <img src={cover} alt={book.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" loading="lazy" onError={() => setImgFailed(true)} />
           ) : (
             <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-violet-300 dark:text-violet-700">
               <BookOpen className="w-10 h-10" />
