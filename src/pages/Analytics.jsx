@@ -103,7 +103,7 @@ export default function Analytics() {
   const { user } = useContext(AuthContext);
   const [stats, setStats] = useState(null);
   const [streak, setStreak] = useState(null);
-  const [activity, setActivity] = useState({ monthlyActivity: [], dailyActivity: [] });
+  const [activity, setActivity] = useState({ monthlyActivity: [], dailyActivity: [], hourlyActivity: [] });
   const [books, setBooks] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -116,7 +116,7 @@ export default function Analytics() {
     ]).then(([statsRes, streakRes, actRes, booksRes]) => {
       setStats(statsRes.data?.data || {});
       setStreak(streakRes.data?.data || {});
-      setActivity(actRes.data?.data || { monthlyActivity: [], dailyActivity: [] });
+      setActivity(actRes.data?.data || { monthlyActivity: [], dailyActivity: [], hourlyActivity: [] });
       setBooks(booksRes.data?.data?.books || booksRes.data?.data || []);
     }).catch(() => {})
     .finally(() => setLoading(false));
@@ -155,28 +155,15 @@ export default function Analytics() {
     }));
   }, [activity]);
 
-  // Time-of-day heatmap — derived from real dailyActivity data.
-  // dailyActivity: [{ date: 'YYYY-MM-DD', minutesRead: N }]
-  // We map each entry to its real day-of-week and spread the minutes into a
-  // representative hour bucket keyed deterministically from the date string
-  // (avoids Math.random while still distributing cells across the grid).
+  // Time-of-day heatmap — uses REAL hourlyActivity from the backend.
+  // Backend: getActivity() aggregates ReadingSession + UploadedBookReadingSession
+  // using MongoDB $dayOfWeek and $hour operators on the stored session date timestamps.
+  // count = cumulative minutes read in that day×hour bucket over the past year (UTC timezone).
+  // Empty array → empty heatmap (correct for new users with no sessions).
+  // No synthetic or fabricated data.
   const timeData = useMemo(() => {
-    const dailyActivity = Array.isArray(activity.dailyActivity) ? activity.dailyActivity : [];
-    const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    return dailyActivity
-      .filter(d => d.minutesRead > 0)
-      .map(d => {
-        const dateObj = new Date(d.date);
-        const dayName = DAY_NAMES[dateObj.getUTCDay()];
-        // Derive a stable hour from the date string digits (0-23 range)
-        const digits = d.date.replace(/-/g, '');
-        const hour = parseInt(digits.slice(-2), 10) % 24;
-        return {
-          day: dayName,
-          hour,
-          count: Math.round(d.minutesRead),
-        };
-      });
+    const hourly = Array.isArray(activity.hourlyActivity) ? activity.hourlyActivity : [];
+    return hourly.filter(d => d.count > 0);
   }, [activity]);
 
   if (loading) return (

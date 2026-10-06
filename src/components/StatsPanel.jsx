@@ -59,7 +59,8 @@ export default function StatsPanel({ books = [], analytics }) {
   const completed   = bookList.filter(b => b.status === 'completed').length;
   const reading     = bookList.filter(b => b.status === 'reading').length;
   const wishlist    = bookList.filter(b => b.status === 'wishlist').length;
-  const totalPages  = analytics?.totalPagesRead || bookList.reduce((s, b) => s + (b.currentPage || 0), 0);
+  // Backend getDashboardStats returns 'pagesRead' (not 'totalPagesRead').
+  const totalPages  = analytics?.pagesRead ?? bookList.reduce((s, b) => s + (b.currentPage || 0), 0);
   const goalProgress = analytics?.yearlyGoalProgress || 0;
   const avgRating    = analytics?.averageRating || 0;
 
@@ -154,7 +155,7 @@ export default function StatsPanel({ books = [], analytics }) {
               <span className="text-sm font-bold text-white">Reading Goal {analytics?.year || new Date().getFullYear()}</span>
             </div>
             <p className="text-slate-400 text-sm">
-              <span className="text-violet-400 font-bold">{analytics?.completedBooks || completed}</span>
+              <span className="text-violet-400 font-bold">{analytics?.totalBooksRead ?? completed}</span>
               {' of '}
               <span className="text-white font-bold">{analytics?.targetBooks || '?'}</span> books completed
             </p>

@@ -325,6 +325,8 @@ const getActivity = catchAsync(async (req, res, next) => {
     uploadedCompletedMonthly,
     readingDaily,
     uploadedDaily,
+    readingHourly,
+    uploadedHourly,
   ] = await Promise.all([
     ReadingSession.aggregate([
       {
@@ -445,9 +447,39 @@ const getActivity = catchAsync(async (req, res, next) => {
         },
       },
     ]),
+    // Hourly breakdown — uses actual $dayOfWeek and $hour from session timestamps.
+    // dayOfWeek: 1=Sun, 2=Mon, …, 7=Sat (MongoDB convention).
+    ReadingSession.aggregate([
+      { $match: { user: userId, date: { $gte: oneYearAgo, $lte: now } } },
+      {
+        $group: {
+          _id: {
+            dayOfWeek: { $dayOfWeek: '$date' },
+            hour: { $hour: '$date' },
+          },
+          totalDuration: { $sum: '$duration' },
+        },
+      },
+    ]),
+    UploadedBookReadingSession.aggregate([
+      { $match: { user: userId, date: { $gte: oneYearAgo, $lte: now } } },
+      {
+        $group: {
+          _id: {
+            dayOfWeek: { $dayOfWeek: '$date' },
+            hour: { $hour: '$date' },
+          },
+          totalDurationSeconds: { $sum: '$durationInSeconds' },
+        },
+      },
+    ]),
   ]);
 
   const monthlyMap = new Map();
+  const hourlyMap = new Map();
+
+  // MongoDB $dayOfWeek: 1=Sun … 7=Sat. Map to the day names used by the heatmap.
+  const DOW_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']; // index 0=Sun
 
   const upsertMonthly = (arr, isUploaded, fieldDurationName) => {
     arr.forEach((item) => {
@@ -534,10 +566,45 @@ const getActivity = catchAsync(async (req, res, next) => {
 
   dailyActivity.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
+  // ── Hourly activity — real reading timestamps ──────────────────────────────
+  // MongoDB $dayOfWeek returns 1=Sunday … 7=Saturday (UTC-based).
+  // We map to day name strings matching the frontend heatmap: Sun/Mon/…/Sat.
+  // count = total minutes read in that day×hour bucket over the past year.
+  const upsertHourly = (arr, fieldDurationName) => {
+    (Array.isArray(arr) ? arr : []).forEach((item) => {
+      const dow = item._id?.dayOfWeek;   // 1=Sun … 7=Sat
+      const hr  = item._id?.hour;        // 0–23 (UTC)
+      if (dow == null || hr == null) return;
+      const dayName = DOW_NAMES[dow - 1]; // DOW_NAMES[0]=Sun … DOW_NAMES[6]=Sat
+      const key = `${dayName}:${hr}`;
+      const existing = hourlyMap.get(key) || { day: dayName, hour: hr, count: 0 };
+      const rawVal = item[fieldDurationName];
+      if (rawVal != null) {
+        const minutes =
+          fieldDurationName === 'totalDurationSeconds' ? rawVal / 60 : rawVal;
+        existing.count += minutes || 0;
+      }
+      hourlyMap.set(key, existing);
+    });
+  };
+
+  upsertHourly(readingHourly, 'totalDuration');
+  upsertHourly(uploadedHourly, 'totalDurationSeconds');
+
+  const hourlyActivity = Array.from(hourlyMap.values()).map((h) => ({
+    day: h.day,
+    hour: h.hour,
+    count: Math.round(h.count),
+  }));
+
   return sendSuccess(res, {
     data: {
       monthlyActivity,
       dailyActivity,
+      // hourlyActivity: real reading-time distribution by day-of-week and hour (UTC).
+      // count = cumulative minutes read in that bucket over the past year.
+      // Empty for users with no ReadingSession records.
+      hourlyActivity,
     },
   });
 });

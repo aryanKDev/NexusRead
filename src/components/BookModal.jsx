@@ -39,11 +39,20 @@ const BookModal = ({ book, bookId: bookIdProp, isOpen, onClose, onReactionClick,
       : [];
   const availableEmojis = ['❤️', '😭', '🤔', '💪', '🎯', '✨', '📚', '🌟', '🔥', '👏', '😍', '🤯', '💡', '🙌'];
 
-  // Load existing notes when modal opens (requires bookId)
+  // Load existing notes when modal opens or bookId changes.
+  // CRITICAL: clear notes state immediately before each fetch so that
+  // Book A's notes are never visible while Book B's notes are loading.
   useEffect(() => {
-    if (!isOpen || !bookId) return;
-    setNotesLoading(true);
+    // Always reset when bookId changes (prevents stale-note cross-book leakage).
+    setNotes([]);
     setNoteError('');
+
+    if (!isOpen || !bookId) return;
+
+    // Guard against `/notes/undefined` calls — bookId must be a non-empty string.
+    if (typeof bookId !== 'string' || !bookId.trim()) return;
+
+    setNotesLoading(true);
     api.get(`/reader/notes/${bookId}`)
       .then(({ data }) => setNotes(Array.isArray(data?.data) ? data.data : []))
       .catch(() => setNoteError('Could not load notes.'))
