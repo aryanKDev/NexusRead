@@ -117,7 +117,6 @@ const AddBookModal = ({ isOpen, onClose, onAddBook }) => {
         ...formData,
         pages: parseInt(formData.pages) || 0,
         currentPage: parseInt(formData.currentPage) || 0,
-        cover: formData.cover || `https://images.pexels.com/photos/${Math.floor(Math.random() * 1000000)}/pexels-photo-${Math.floor(Math.random() * 1000000)}.jpeg?auto=compress&cs=tinysrgb&w=400`,
         reactions: {},
         highlights: [],
         review: ''
@@ -132,34 +131,46 @@ const AddBookModal = ({ isOpen, onClose, onAddBook }) => {
     }
   };
 
-  const searchBooks = async (query) => {
+  const [searchError, setSearchError] = useState('');
+  const searchDebounceRef = useRef(null);
+
+  const searchBooks = (query) => {
+    clearTimeout(searchDebounceRef.current);
+    setSearchError('');
+
     if (!query.trim()) {
       setSearchResults([]);
+      setIsSearching(false);
       return;
     }
 
     setIsSearching(true);
-    // Simulate API search with mock data
-    setTimeout(() => {
-      const mockResults = [
-        {
-          title: `${query} - The Complete Guide`,
-          author: 'John Smith',
-          pages: 320,
-          genre: ['Non-Fiction', 'Education'],
-          cover: `https://images.pexels.com/photos/1314410/pexels-photo-1314410.jpeg?auto=compress&cs=tinysrgb&w=400`
-        },
-        {
-          title: `Understanding ${query}`,
-          author: 'Jane Doe',
-          pages: 256,
-          genre: ['Psychology', 'Self-Help'],
-          cover: `https://images.pexels.com/photos/1553962/pexels-photo-1553962.jpeg?auto=compress&cs=tinysrgb&w=400`
-        }
-      ];
-      setSearchResults(mockResults);
-      setIsSearching(false);
-    }, 1000);
+    searchDebounceRef.current = setTimeout(async () => {
+      try {
+        const { default: api } = await import('../api/axios');
+        const res = await api.get('/books/search', { params: { q: query.trim() } });
+        const raw = res.data?.data;
+        const results = Array.isArray(raw) ? raw : [];
+        setSearchResults(results.map(b => ({
+          title: b.title || 'Untitled',
+          author: Array.isArray(b.authors) && b.authors.length > 0
+            ? b.authors.join(', ')
+            : (b.author || ''),
+          pages: b.pageCount || 0,
+          genre: [],
+          cover: b.thumbnail || '',
+          externalId: b.id || '',
+          source: b.source || '',
+          description: b.description || '',
+        })));
+        setSearchError('');
+      } catch (err) {
+        setSearchResults([]);
+        setSearchError('Search failed. Please try again.');
+      } finally {
+        setIsSearching(false);
+      }
+    }, 400);
   };
 
   const selectSearchResult = (book) => {
@@ -215,19 +226,36 @@ const AddBookModal = ({ isOpen, onClose, onAddBook }) => {
                   onChange={(e) => searchBooks(e.target.value)}
                 />
               </div>
-              
-              {searchResults.length > 0 && (
-                <div className="mt-2 bg-gray-50 dark:bg-gray-700 rounded-lg p-3 space-y-2">
+
+              {isSearching && (
+                <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">Searching…</p>
+              )}
+
+              {searchError && !isSearching && (
+                <p className="mt-2 text-sm text-red-500">{searchError}</p>
+              )}
+
+              {!isSearching && !searchError && searchResults.length > 0 && (
+                <div className="mt-2 bg-gray-50 dark:bg-gray-700 rounded-lg p-3 space-y-2 max-h-56 overflow-y-auto">
                   {searchResults.map((book, index) => (
                     <div
                       key={index}
                       onClick={() => selectSearchResult(book)}
                       className="flex items-center space-x-3 p-2 hover:bg-white dark:hover:bg-gray-600 rounded-lg cursor-pointer transition-colors duration-200"
                     >
-                      <img src={book.cover} alt={book.title} className="w-10 h-12 object-cover rounded" />
-                      <div>
-                        <p className="font-medium text-gray-900 dark:text-white">{book.title}</p>
-                        <p className="text-sm text-gray-600 dark:text-gray-400">by {book.author}</p>
+                      {book.cover ? (
+                        <img src={book.cover} alt={book.title} className="w-10 h-12 object-cover rounded flex-shrink-0" />
+                      ) : (
+                        <div className="w-10 h-12 rounded bg-gray-200 dark:bg-gray-600 flex items-center justify-center flex-shrink-0">
+                          <Search className="h-4 w-4 text-gray-400" />
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <p className="font-medium text-gray-900 dark:text-white truncate">{book.title}</p>
+                        <p className="text-sm text-gray-600 dark:text-gray-400 truncate">
+                          {book.author ? `by ${book.author}` : ''}
+                          {book.pages ? ` · ${book.pages}pp` : ''}
+                        </p>
                       </div>
                     </div>
                   ))}

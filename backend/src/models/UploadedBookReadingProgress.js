@@ -1,5 +1,27 @@
 const mongoose = require('mongoose');
 
+// Sub-schemas mirror those in ReadingProgress so the reader API
+// can use the same payload shape for both book types.
+const bookmarkSchema = new mongoose.Schema({
+  page: { type: Number, required: true },
+  label: { type: String, default: '' },
+  createdAt: { type: Date, default: Date.now },
+});
+
+const highlightSchema = new mongoose.Schema({
+  text: { type: String, required: true },
+  page: { type: Number, required: true },
+  colorId: { type: String, default: 'yellow' },
+  note: { type: String, default: '' },
+  createdAt: { type: Date, default: Date.now },
+});
+
+const noteSchema = new mongoose.Schema({
+  content: { type: String, required: true },
+  page: { type: Number, default: 0 },
+  createdAt: { type: Date, default: Date.now },
+});
+
 const uploadedBookReadingProgressSchema = new mongoose.Schema(
   {
     user: {
@@ -32,6 +54,11 @@ const uploadedBookReadingProgressSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+
+    // ── Reader annotations ─────────────────────────────────────────────────
+    bookmarks: { type: [bookmarkSchema], default: [] },
+    userHighlights: { type: [highlightSchema], default: [] },
+    notes: { type: [noteSchema], default: [] },
   },
   {
     toJSON: {
@@ -58,3 +85,4 @@ const UploadedBookReadingProgress = mongoose.model(
   uploadedBookReadingProgressSchema
 );
 module.exports = UploadedBookReadingProgress;
+

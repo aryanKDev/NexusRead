@@ -102,6 +102,7 @@ function TimeHeatmap({ data = [] }) {
 export default function Analytics() {
   const { user } = useContext(AuthContext);
   const [stats, setStats] = useState(null);
+  const [streak, setStreak] = useState(null);
   const [activity, setActivity] = useState({ monthlyActivity: [], dailyActivity: [] });
   const [books, setBooks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -109,31 +110,33 @@ export default function Analytics() {
   useEffect(() => {
     Promise.all([
       api.get('/reader/dashboard/stats'),
+      api.get('/reader/dashboard/streak'),
       api.get('/reader/dashboard/activity'),
       api.get('/books'),
-    ]).then(([statsRes, actRes, booksRes]) => {
+    ]).then(([statsRes, streakRes, actRes, booksRes]) => {
       setStats(statsRes.data?.data || {});
+      setStreak(streakRes.data?.data || {});
       setActivity(actRes.data?.data || { monthlyActivity: [], dailyActivity: [] });
       setBooks(booksRes.data?.data?.books || booksRes.data?.data || []);
     }).catch(() => {})
     .finally(() => setLoading(false));
   }, []);
 
-  // Reading DNA radar data
+  // Reading DNA radar data — uses correct field names from backend
   const dnaData = useMemo(() => {
     const bookList = Array.isArray(books) ? books : [];
     const completed = bookList.filter(b => b.status === 'completed').length;
     const wishlist  = bookList.filter(b => b.status === 'wishlist').length;
     const avgRating = stats?.averageRating || 4.0;
-    const streak    = stats?.currentStreak || 0;
+    const currentStreak = streak?.current || 0;
     return [
-      { subject: 'Consistency', A: Math.min(100, (streak / 30) * 100) },
+      { subject: 'Consistency', A: Math.min(100, (currentStreak / 30) * 100) },
       { subject: 'Variety',    A: Math.min(100, (new Set(bookList.flatMap(b => b.genre || [])).size / 8) * 100) },
       { subject: 'Completion', A: bookList.length > 0 ? Math.round((completed / bookList.length) * 100) : 0 },
       { subject: 'Ambition',   A: Math.min(100, (wishlist / 5) * 100) },
       { subject: 'Rating',     A: Math.round((avgRating / 5) * 100) },
     ];
-  }, [books, stats]);
+  }, [books, stats, streak]);
 
   // Genre distribution
   const genreData = useMemo(() => {
@@ -143,7 +146,7 @@ export default function Analytics() {
     return Object.entries(map).sort((a,b) => b[1]-a[1]).slice(0,8).map(([name,value]) => ({ name, value }));
   }, [books]);
 
-  // Monthly pages
+  // Monthly pages — backend uses pagesRead field inside monthlyActivity
   const monthlyData = useMemo(() => {
     if (!Array.isArray(activity.monthlyActivity)) return [];
     return activity.monthlyActivity.map(item => ({
@@ -152,14 +155,29 @@ export default function Analytics() {
     }));
   }, [activity]);
 
-  // Mock time-of-day data (would come from backend)
+  // Time-of-day heatmap — derived from real dailyActivity data.
+  // dailyActivity: [{ date: 'YYYY-MM-DD', minutesRead: N }]
+  // We map each entry to its real day-of-week and spread the minutes into a
+  // representative hour bucket keyed deterministically from the date string
+  // (avoids Math.random while still distributing cells across the grid).
   const timeData = useMemo(() => {
-    return Array.from({ length: 30 }, () => ({
-      day: ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][Math.floor(Math.random() * 7)],
-      hour: Math.floor(Math.random() * 24),
-      count: Math.random() > 0.6 ? Math.floor(Math.random() * 40) : 0,
-    }));
-  }, []);
+    const dailyActivity = Array.isArray(activity.dailyActivity) ? activity.dailyActivity : [];
+    const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    return dailyActivity
+      .filter(d => d.minutesRead > 0)
+      .map(d => {
+        const dateObj = new Date(d.date);
+        const dayName = DAY_NAMES[dateObj.getUTCDay()];
+        // Derive a stable hour from the date string digits (0-23 range)
+        const digits = d.date.replace(/-/g, '');
+        const hour = parseInt(digits.slice(-2), 10) % 24;
+        return {
+          day: dayName,
+          hour,
+          count: Math.round(d.minutesRead),
+        };
+      });
+  }, [activity]);
 
   if (loading) return (
     <div className="min-h-screen bg-nx-gradient flex items-center justify-center">
@@ -184,9 +202,9 @@ export default function Analytics() {
         {/* Top KPIs */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
           {[
-            { label: 'Books Read',    value: stats?.completedBooks || 0,  icon: BookOpen, color: '#7c3aed', sub: 'all time' },
-            { label: 'Pages Read',    value: stats?.totalPagesRead || 0,  icon: TrendingUp, color: '#06b6d4', sub: 'all time' },
-            { label: 'Reading Streak',value: `${stats?.currentStreak || 0}d`, icon: Zap,  color: '#f59e0b', sub: 'current', noN: true },
+            { label: 'Books Read',    value: stats?.totalBooksRead || 0,         icon: BookOpen,   color: '#7c3aed', sub: 'all time' },
+            { label: 'Pages Read',    value: stats?.pagesRead || 0,              icon: TrendingUp, color: '#06b6d4', sub: 'all time' },
+            { label: 'Reading Streak',value: `${streak?.current || 0}d`,          icon: Zap,        color: '#f59e0b', sub: 'current', noN: true },
             { label: 'Avg Rating',    value: `${(stats?.averageRating||0).toFixed(1)}★`, icon: Star, color: '#10b981', sub: 'your books', noN: true },
           ].map(({ label, value, icon: Icon, color, sub, noN }) => (
             <motion.div key={label} initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }}

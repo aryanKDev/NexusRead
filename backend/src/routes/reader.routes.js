@@ -3,6 +3,7 @@ const { protect } = require('../middleware/auth');
 const { handleUpload } = require('../middlewares/upload.middleware');
 const readerController = require('../controllers/reader.controller');
 const readerAnalyticsController = require('../controllers/readerAnalytics.controller');
+const noteController = require('../controllers/note.controller');
 
 const router = express.Router();
 
@@ -35,6 +36,11 @@ router.get('/dashboard/feed', readerAnalyticsController.getReadingActivityFeed);
 router.get('/dashboard/recommendations', readerAnalyticsController.getRecommendations);
 router.get('/goals', readerAnalyticsController.getGoalsSummary);
 router.post('/goals', readerAnalyticsController.upsertGoal);
+
+// Quick notes — must be BEFORE the /:bookId catch-all to avoid mis-routing
+router.get('/notes/:bookId', noteController.getNotes);
+router.post('/notes/:bookId', noteController.createNote);
+router.delete('/notes/:bookId/:noteId', noteController.deleteNote);
 
 router.get('/:bookId', readerController.getBook);
 

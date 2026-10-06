@@ -198,15 +198,27 @@ const updateProgress = catchAsync(async (req, res, next) => {
   const now = new Date();
 
   if (type === 'uploaded') {
+    // Use $set to update only the supplied fields atomically.
+    // Annotations (bookmarks, userHighlights) are updated only when
+    // the caller explicitly sends them — absent fields are not touched,
+    // preventing a page-save from erasing a concurrent bookmark update.
+    const setFields = {
+      currentPage: page,
+      totalPages: total,
+      percentage,
+      lastReadAt: now,
+      updatedAt: now,
+    };
+    if (Array.isArray(req.body.bookmarks)) {
+      setFields.bookmarks = req.body.bookmarks;
+    }
+    if (Array.isArray(req.body.userHighlights)) {
+      setFields.userHighlights = req.body.userHighlights;
+    }
+
     const progress = await UploadedBookReadingProgress.findOneAndUpdate(
       { user: req.user._id, book: bookId },
-      {
-        currentPage: page,
-        totalPages: total,
-        percentage,
-        lastReadAt: now,
-        updatedAt: now,
-      },
+      { $set: setFields },
       {
         new: true,
         upsert: true,
@@ -218,23 +230,25 @@ const updateProgress = catchAsync(async (req, res, next) => {
   }
 
   // type === 'catalog'
+  // Use $set to avoid a full-document replace that would overwrite annotations
+  // saved by a concurrent tab's progress update.
   const catalogStatus = percentage >= 100 ? 'completed' : (page > 1 ? 'reading' : 'wishlist');
-  const updateFields = {
+  const catalogSetFields = {
     currentPage: page,
     percentage,
     lastReadAt: now,
     status: catalogStatus,
   };
   if (Array.isArray(req.body.bookmarks)) {
-    updateFields.bookmarks = req.body.bookmarks;
+    catalogSetFields.bookmarks = req.body.bookmarks;
   }
   if (Array.isArray(req.body.userHighlights)) {
-    updateFields.userHighlights = req.body.userHighlights;
+    catalogSetFields.userHighlights = req.body.userHighlights;
   }
 
   const progress = await ReadingProgress.findOneAndUpdate(
     { user: req.user._id, book: bookId },
-    updateFields,
+    { $set: catalogSetFields },
     {
       new: true,
       upsert: true,
@@ -278,11 +292,20 @@ const getProgress = catchAsync(async (req, res, next) => {
           currentPage: 1,
           totalPages: 1,
           percentage: 0,
+          bookmarks: [],
+          userHighlights: [],
         },
       });
     }
 
-    return sendSuccess(res, { data: progress });
+    // Return the full progress document; annotation arrays are now present on the model.
+    return sendSuccess(res, {
+      data: {
+        ...progress.toObject(),
+        bookmarks: progress.bookmarks || [],
+        userHighlights: progress.userHighlights || [],
+      },
+    });
   }
 
   // type === 'catalog'

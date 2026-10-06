@@ -12,15 +12,23 @@ import {
   Quote,
   Edit,
   Plus,
+  Trash2,
 } from 'lucide-react';
 import { gsap } from 'gsap';
+import api from '../api/axios';
 
-const BookModal = ({ book, isOpen, onClose, onReactionClick, onEdit }) => {
+const BookModal = ({ book, bookId: bookIdProp, isOpen, onClose, onReactionClick, onEdit }) => {
   const modalRef = useRef(null);
   const contentRef = useRef(null);
   const [currentStep, setCurrentStep] = useState(0);
   const [selectedEmoji, setSelectedEmoji] = useState('');
   const [newNote, setNewNote] = useState('');
+  const [notes, setNotes] = useState([]);
+  const [notesLoading, setNotesLoading] = useState(false);
+  const [noteError, setNoteError] = useState('');
+
+  // Resolve bookId — prop takes priority, fall back to book._id / book.id
+  const bookId = bookIdProp || book?._id || book?.id;
 
   const reviewSteps =
     book?.review && typeof book.review === 'string'
@@ -30,6 +38,17 @@ const BookModal = ({ book, isOpen, onClose, onReactionClick, onEdit }) => {
           .filter((step) => step.length > 10)
       : [];
   const availableEmojis = ['❤️', '😭', '🤔', '💪', '🎯', '✨', '📚', '🌟', '🔥', '👏', '😍', '🤯', '💡', '🙌'];
+
+  // Load existing notes when modal opens (requires bookId)
+  useEffect(() => {
+    if (!isOpen || !bookId) return;
+    setNotesLoading(true);
+    setNoteError('');
+    api.get(`/reader/notes/${bookId}`)
+      .then(({ data }) => setNotes(Array.isArray(data?.data) ? data.data : []))
+      .catch(() => setNoteError('Could not load notes.'))
+      .finally(() => setNotesLoading(false));
+  }, [isOpen, bookId]);
 
   useEffect(() => {
     if (isOpen && modalRef.current && contentRef.current) {
@@ -84,9 +103,29 @@ const BookModal = ({ book, isOpen, onClose, onReactionClick, onEdit }) => {
     handleClose();
   };
 
-  const addQuickNote = () => {
-    if (newNote.trim()) {
+  const addQuickNote = async () => {
+    const content = newNote.trim();
+    if (!content || !bookId) return;
+    setNoteError('');
+    try {
+      const { data } = await api.post(`/reader/notes/${bookId}`, { content });
+      const created = data?.data;
+      if (created) {
+        setNotes(prev => [created, ...prev]);
+      }
       setNewNote('');
+    } catch {
+      setNoteError('Failed to save note. Please try again.');
+    }
+  };
+
+  const deleteNote = async (noteId) => {
+    if (!bookId || !noteId) return;
+    try {
+      await api.delete(`/reader/notes/${bookId}/${noteId}`);
+      setNotes(prev => prev.filter(n => (n._id || n.id) !== noteId));
+    } catch {
+      setNoteError('Failed to delete note.');
     }
   };
 
@@ -212,28 +251,54 @@ const BookModal = ({ book, isOpen, onClose, onReactionClick, onEdit }) => {
                 </div>
               </div>
 
-              {/* Quick Note Section */}
+              {/* Quick Note Section — persisted via /reader/notes/:bookId */}
               <div className="mb-6">
                 <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-3">
-                  Quick Note
+                  Quick Notes
                 </h3>
-                <div className="flex space-x-2">
+                <div className="flex space-x-2 mb-2">
                   <input
                     type="text"
                     value={newNote}
                     onChange={(e) => setNewNote(e.target.value)}
-                    placeholder="Add a quick thought or note..."
-                    className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder={bookId ? 'Add a quick thought or note...' : 'Open a book to add notes'}
+                    disabled={!bookId}
+                    className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:opacity-50"
                     onKeyPress={(e) => e.key === 'Enter' && addQuickNote()}
                   />
                   <button
                     onClick={addQuickNote}
-                    disabled={!newNote.trim()}
+                    disabled={!newNote.trim() || !bookId}
                     className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Plus className="h-4 w-4" />
                   </button>
                 </div>
+                {noteError && (
+                  <p className="text-xs text-red-500 mb-2">{noteError}</p>
+                )}
+                {notesLoading && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400">Loading notes…</p>
+                )}
+                {!notesLoading && notes.length > 0 && (
+                  <div className="space-y-2 max-h-36 overflow-y-auto">
+                    {notes.map((note) => {
+                      const nid = note._id || note.id;
+                      return (
+                        <div key={nid} className="flex items-start gap-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg px-3 py-2">
+                          <p className="flex-1 text-sm text-gray-800 dark:text-gray-200 leading-snug">{note.content}</p>
+                          <button
+                            onClick={() => deleteNote(nid)}
+                            className="flex-shrink-0 p-0.5 text-gray-400 hover:text-red-500 transition-colors"
+                            title="Delete note"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               {highlights.length > 0 && (
