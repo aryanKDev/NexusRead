@@ -63,22 +63,70 @@ exports.register = catchAsync(async (req, res, next) => {
   await createSendTokens(user, req, res, 201);
 });
 
+// Account-level brute-force constants.
+const LOGIN_MAX_ATTEMPTS = parseInt(process.env.LOGIN_MAX_ATTEMPTS, 10) || 5;
+const LOGIN_LOCK_DURATION_MS =
+  (parseInt(process.env.LOGIN_LOCK_DURATION_MINUTES, 10) || 15) * 60 * 1000;
+
 exports.login = catchAsync(async (req, res, next) => {
   const { email, password } = req.body;
 
+  // Load hidden lockout fields alongside password for the full login check.
   const user = await User.findOne({ email: email.toLowerCase() }).select(
-    '+password'
+    '+password +failedLoginAttempts +lockedUntil'
   );
 
-  if (!user || !(await user.correctPassword(password, user.password))) {
+  // ── Account-level lockout check ──────────────────────────────────────────────
+  // Checked before password comparison to prevent timing-based enumeration:
+  // even a non-existent account returns the same "locked" error shape if an
+  // attacker somehow triggered a lockout on a real account.
+  if (user && user.lockedUntil && user.lockedUntil > Date.now()) {
+    const retryAfterSec = Math.ceil((user.lockedUntil - Date.now()) / 1000);
+    authLogger.warn('auth.login.locked', {
+      userId: user._id,
+      ip: req.ip,
+      retryAfterSec,
+    });
+    return res.status(429).json({
+      status: 'fail',
+      message: `Account temporarily locked due to too many failed login attempts. Please try again in ${Math.ceil(retryAfterSec / 60)} minute(s).`,
+    });
+  }
+
+  // ── Credential validation ────────────────────────────────────────────────────
+  const credentialsValid =
+    user && (await user.correctPassword(password, user.password));
+
+  if (!credentialsValid) {
     authLogger.warn('auth.login.failed', {
       email,
       ip: req.ip,
       userAgent: req.get('user-agent'),
     });
+
+    // Increment counter only for existing accounts to avoid creating phantom
+    // lockouts for email addresses that are not registered.
+    if (user) {
+      const newAttempts = (user.failedLoginAttempts || 0) + 1;
+      const updateData = { failedLoginAttempts: newAttempts };
+
+      if (newAttempts >= LOGIN_MAX_ATTEMPTS) {
+        updateData.lockedUntil = new Date(Date.now() + LOGIN_LOCK_DURATION_MS);
+        authLogger.warn('auth.login.account-locked', {
+          userId: user._id,
+          ip: req.ip,
+          attempts: newAttempts,
+        });
+      }
+
+      // Use updateOne to bypass the pre-save password hashing hook.
+      await User.updateOne({ _id: user._id }, { $set: updateData });
+    }
+
     return next(new AppError('Invalid email or password.', 401));
   }
 
+  // ── Banned check ──────────────────────────────────────────────────────────────
   if (user.isBanned) {
     authLogger.warn('auth.login.banned-user', {
       userId: user._id,
@@ -89,6 +137,14 @@ exports.login = catchAsync(async (req, res, next) => {
       status: 'fail',
       message: 'Your account has been banned. Please contact support.',
     });
+  }
+
+  // ── Success: reset lockout counter ───────────────────────────────────────────
+  if (user.failedLoginAttempts > 0 || user.lockedUntil) {
+    await User.updateOne(
+      { _id: user._id },
+      { $set: { failedLoginAttempts: 0, lockedUntil: null } }
+    );
   }
 
   await createSendTokens(user, req, res, 200);

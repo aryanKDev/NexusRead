@@ -70,17 +70,48 @@ app.use(express.json({ limit: '10kb' }));
 app.use(sanitizeData());
 app.use(sanitizeXss());
 
-// Serve PDF files inline (not as downloads).
-// Mounted behind auth to avoid exposing private uploads.
-app.use(
-  '/api/v1/pdfs',
+// Serve PDF files inline with ownership verification.
+// Prevents IDOR: each request is checked against the UploadedBook owner.
+// The UploadedBook.publicId stores the filename (e.g. "60f9...abc.pdf").
+const UploadedBook = require('./models/UploadedBook');
+app.get(
+  '/api/v1/pdfs/:filename',
   protect,
-  express.static(path.join(__dirname, '..', 'public', 'pdfs'), {
-    setHeaders: (res) => {
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', 'inline');
-    },
-  })
+  (req, res, next) => {
+    const { filename } = req.params;
+
+    // Reject path traversal attempts before DB lookup.
+    if (!filename || /[/\\]/.test(filename) || filename.includes('..')) {
+      return res.status(400).json({ status: 'fail', message: 'Invalid filename.' });
+    }
+
+    UploadedBook.findOne({ publicId: filename })
+      .then((book) => {
+        // No record → either the file never existed or was deleted.
+        // Return 404 rather than 403 to avoid confirming which files exist.
+        if (!book) {
+          return res.status(404).json({ status: 'fail', message: 'File not found.' });
+        }
+
+        // Ownership check: the requesting user must own the book.
+        if (book.user.toString() !== req.user._id.toString()) {
+          return res.status(403).json({ status: 'fail', message: 'Access denied.' });
+        }
+
+        // Ownership confirmed — serve the file.
+        const filePath = path.join(__dirname, '..', 'public', 'pdfs', filename);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', 'inline');
+        res.sendFile(filePath, (err) => {
+          if (err) {
+            if (!res.headersSent) {
+              res.status(404).json({ status: 'fail', message: 'File not found.' });
+            }
+          }
+        });
+      })
+      .catch(next);
+  }
 );
 
 // ── Global rate limiter ─────────────────────────────────────────────

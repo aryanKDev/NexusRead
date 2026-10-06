@@ -56,6 +56,17 @@ const userSchema = new mongoose.Schema(
     // ── Social ─────────────────────────────────────────────────────────────
     following: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     followers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    // ── Brute-force lockout ────────────────────────────────────────────────────
+    failedLoginAttempts: {
+      type: Number,
+      default: 0,
+      select: false,
+    },
+    lockedUntil: {
+      type: Date,
+      default: null,
+      select: false,
+    },
   },
   {
     timestamps: true,
