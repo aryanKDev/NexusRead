@@ -33,8 +33,16 @@ const getStartOfDay = (date) => {
   return d;
 };
 
-const normalizeDateKey = (d) =>
-  new Date(d.getFullYear(), d.getMonth(), d.getDate()).toISOString().slice(0, 10);
+/**
+ * Normalize a Date to a YYYY-MM-DD key using UTC components.
+ * Must match MongoDB's $dateToString '%Y-%m-%d' output (which uses UTC).
+ */
+const normalizeDateKey = (d) => {
+  const year = d.getUTCFullYear();
+  const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
 
 const getDashboardStats = catchAsync(async (req, res, next) => {
   if (!req.user?._id) {
@@ -196,6 +204,10 @@ const getStreak = catchAsync(async (req, res, next) => {
 
   const userId = toObjectId(req.user._id);
   const today = getStartOfDay(new Date());
+  // Use the start of TOMORROW as the upper bound so that sessions created
+  // at any time during today (after midnight) are included in the streak.
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
   const oneYearAgo = new Date(today);
   oneYearAgo.setDate(oneYearAgo.getDate() - 365);
 
@@ -204,7 +216,7 @@ const getStreak = catchAsync(async (req, res, next) => {
       {
         $match: {
           user: userId,
-          date: { $gte: oneYearAgo, $lte: today },
+          date: { $gte: oneYearAgo, $lt: tomorrow },
         },
       },
       {
@@ -224,7 +236,7 @@ const getStreak = catchAsync(async (req, res, next) => {
       {
         $match: {
           user: userId,
-          date: { $gte: oneYearAgo, $lte: today },
+          date: { $gte: oneYearAgo, $lt: tomorrow },
         },
       },
       {
@@ -248,13 +260,16 @@ const getStreak = catchAsync(async (req, res, next) => {
   ]);
 
   const hasActivity = (dateObj) =>
-    activeDates.has(normalizeDateKey(getStartOfDay(dateObj)));
+    activeDates.has(normalizeDateKey(dateObj));
 
   let currentStreak = 0;
-  let cursor = new Date(today);
-  while (currentStreak < 400 && hasActivity(cursor)) {
+  // Use UTC midnight for cursor to match MongoDB $dateToString UTC output
+  const cursor = new Date();
+  cursor.setUTCHours(0, 0, 0, 0); // UTC midnight today
+  const cursorCopy = new Date(cursor);
+  while (currentStreak < 400 && hasActivity(cursorCopy)) {
     currentStreak += 1;
-    cursor.setDate(cursor.getDate() - 1);
+    cursorCopy.setUTCDate(cursorCopy.getUTCDate() - 1);
   }
 
   const sortedDates = Array.from(activeDates)
@@ -269,8 +284,9 @@ const getStreak = catchAsync(async (req, res, next) => {
     if (!prev) {
       streak = 1;
     } else {
+      // Both d and prev are UTC date strings (YYYY-MM-DD); parse them as UTC midnight
       const diffDays = Math.round(
-        (getStartOfDay(d) - getStartOfDay(prev)) / (1000 * 60 * 60 * 24)
+        (new Date(d) - new Date(prev)) / (1000 * 60 * 60 * 24)
       );
       if (diffDays === 1) {
         streak += 1;
