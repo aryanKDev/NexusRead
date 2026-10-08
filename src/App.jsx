@@ -1,6 +1,5 @@
 import { useContext, useState, Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
-import { AnimatePresence } from 'framer-motion';
 import { AuthProvider, AuthContext } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
 import { LibraryProvider } from './context/LibraryContext';
@@ -9,12 +8,13 @@ import { NotificationProvider } from './context/NotificationContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import AdminProtectedRoute from './components/AdminProtectedRoute';
 import AppLayout from './components/AppLayout';
-import Login from './pages/Login';
-import Register from './pages/Register';
-import Dashboard from './pages/Dashboard';
-import NotFound from './pages/NotFound';
+import ErrorBoundary from './components/ErrorBoundary';
 
 // ── Lazy-loaded pages (code-split for performance) ──────────────
+const Login = lazy(() => import('./pages/Login'));
+const Register = lazy(() => import('./pages/Register'));
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const NotFound = lazy(() => import('./pages/NotFound'));
 const Explore = lazy(() => import('./pages/Explore'));
 const Reader = lazy(() => import('./pages/Reader'));
 const Analytics = lazy(() => import('./pages/Analytics'));
@@ -71,7 +71,7 @@ function AppRoutes() {
         <Route path="/register" element={user ? <Navigate to="/dashboard" replace /> : <Register />} />
 
         {/* Reader — full screen, no sidebar layout */}
-        <Route path="/reader/:bookId" element={<ProtectedRoute><Reader /></ProtectedRoute>} />
+        <Route path="/reader/:bookId" element={<ProtectedRoute><ErrorBoundary><Reader /></ErrorBoundary></ProtectedRoute>} />
 
         {/* Admin — has its own layout */}
         <Route path="/admin" element={<AdminProtectedRoute><AdminLayout /></AdminProtectedRoute>}>
@@ -111,19 +111,21 @@ function AppRoutes() {
 
 function App() {
   return (
-    <AuthProvider>
-      <ToastProvider>
-        <LibraryProvider>
-          <CartProvider>
-            <NotificationProvider>
-              <BrowserRouter>
-                <AppRoutes />
-              </BrowserRouter>
-            </NotificationProvider>
-          </CartProvider>
-        </LibraryProvider>
-      </ToastProvider>
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <ToastProvider>
+          <LibraryProvider>
+            <CartProvider>
+              <NotificationProvider>
+                <BrowserRouter>
+                  <AppRoutes />
+                </BrowserRouter>
+              </NotificationProvider>
+            </CartProvider>
+          </LibraryProvider>
+        </ToastProvider>
+      </AuthProvider>
+    </ErrorBoundary>
   );
 }
 

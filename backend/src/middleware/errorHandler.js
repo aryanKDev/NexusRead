@@ -56,6 +56,9 @@ const errorHandler = (err, req, res, next) => {
     let error = { ...err };
     error.message = err.message;
 
+    if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+      error = new AppError('Invalid JSON payload.', 400);
+    }
     if (err.name === 'CastError') error = handleCastErrorDB(err);
     if (err.code === 11000) error = handleDuplicateFieldsDB(err);
     if (err.name === 'ValidationError') error = handleValidationErrorDB(err);

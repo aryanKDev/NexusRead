@@ -14,6 +14,20 @@ const {
 
 const app = express();
 
+// Trust reverse proxy (Render, Vercel, Nginx) for accurate client IP resolution & rate limiting
+app.set('trust proxy', 1);
+
+// Lightweight top-level health probe for container orchestrators and platform monitoring
+app.get('/health', (req, res) => {
+  const isDbConnected = require('mongoose').connection.readyState === 1;
+  res.status(isDbConnected ? 200 : 503).json({
+    status: isDbConnected ? 'ok' : 'degraded',
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+    database: isDbConnected ? 'connected' : 'disconnected',
+  });
+});
+
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: 'cross-origin' },
@@ -66,6 +80,7 @@ app.use(
 
 app.use(cookieParser());
 app.use(express.json({ limit: '10kb' }));
+app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
 app.use(sanitizeData());
 app.use(sanitizeXss());

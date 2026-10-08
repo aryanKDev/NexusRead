@@ -308,7 +308,7 @@ npm start
 
 The API will be available at `http://localhost:5000/api/v1`
 
-> **Health check:** `GET /api/v1/health`
+> **Health check:** `GET /health` (container probe) or `GET /api/v1/health` (detailed diagnostics)
 
 ---
 
